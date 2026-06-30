@@ -1,0 +1,14 @@
+---
+pid: 152784
+cwd: "C:\Users\felix\GrokProg\mi-todo-app"
+command: "cd \"C:\\Users\\felix\\GrokProg\\mi-todo-app\"; npm start"
+started_at: 2026-06-30T23:08:13.899Z
+running_for_ms: 1369995  
+---
+
+> mi-todo-app@1.0.0 start
+> node server/index.js
+
+Servidor en http://localhost:3000
+API:   http://localhost:3000/api/tasks
+[db] better-sqlite3 no disponible — node:sqlite en C:\Users\felix\GrokProg\mi-todo-app\server\tasks.db

@@ -1,32 +1,22 @@
 /**
  * ============================================
- * Mi Lista de Tareas — Frontend (consume API REST)
+ * TaskFlow — Tablero Kanban
  * ============================================
- *
- * Módulos:
- *   1. Constantes y configuración
- *   2. Cliente API (fetch)
- *   3. Estado de la aplicación
- *   4. Operaciones sobre tareas
- *   5. Filtrado, contador y utilidades
- *   6. Renderizado del DOM
- *   7. Edición inline
- *   8. Tema claro / oscuro
- *   9. Manejo de eventos e inicialización
  */
 
-/* ============================================
-   1. CONSTANTES Y CONFIGURACIÓN
-   ============================================ */
-
-/** URL base de la API REST */
-const API_URL = '/api/tasks';
-
-/** Clave usada en localStorage solo para el tema (no para tareas) */
+const API_TASKS = '/api/tasks';
+const API_PROJECTS = '/api/projects';
 const THEME_STORAGE_KEY = 'mi-todo-app-theme';
+const PROJECT_STORAGE_KEY = 'mi-todo-app-active-project';
 
-const DEFAULT_FILTER = 'all';
 const DEFAULT_PRIORITY = 'medium';
+const DEFAULT_STATUS = 'todo';
+
+const COLUMNS = [
+  { id: 'todo', label: 'Por Hacer', color: '#6366f1', icon: '○' },
+  { id: 'in_progress', label: 'En Progreso', color: '#f59e0b', icon: '◐' },
+  { id: 'done', label: 'Terminada', color: '#10b981', icon: '●' },
+];
 
 const PRIORITY_CONFIG = {
   high:   { label: 'Alta',  cssClass: 'high' },
@@ -35,64 +25,69 @@ const PRIORITY_CONFIG = {
 };
 
 const VALID_PRIORITIES = Object.keys(PRIORITY_CONFIG);
+const VALID_STATUSES = COLUMNS.map((c) => c.id);
 
-/* ----- Referencias al DOM ----- */
+const STATUS_INDEX = { todo: 0, in_progress: 1, done: 2 };
 
-const addTaskForm        = document.getElementById('add-task-form');
-const taskInput          = document.getElementById('task-input');
-const prioritySelect     = document.getElementById('priority-select');
-const dueDateInput       = document.getElementById('due-date-input');
+const PROJECT_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#64748b'];
+
+/* ----- DOM ----- */
+
+const sidebar            = document.getElementById('sidebar');
+const sidebarOverlay     = document.getElementById('sidebar-overlay');
+const sidebarOpen        = document.getElementById('sidebar-open');
+const sidebarClose       = document.getElementById('sidebar-close');
+const projectList        = document.getElementById('project-list');
+const addProjectForm     = document.getElementById('add-project-form');
+const projectNameInput   = document.getElementById('project-name-input');
+const projectTitle       = document.getElementById('project-title');
+const projectColorDot    = document.getElementById('project-color-dot');
+const renameProjectBtn   = document.getElementById('rename-project-btn');
+const deleteProjectBtn   = document.getElementById('delete-project-btn');
 const addTaskBtn         = document.getElementById('add-task-btn');
-const taskList           = document.getElementById('task-list');
+const kanbanBoard        = document.getElementById('kanban-board');
 const taskCounter        = document.getElementById('task-counter');
-const emptyState         = document.getElementById('empty-state');
-const taskFooter         = document.getElementById('task-footer');
-const clearCompletedBtn  = document.getElementById('clear-completed-btn');
-const filterButtons      = document.querySelectorAll('.filter-btn');
 const themeToggle        = document.getElementById('theme-toggle');
 const errorBanner        = document.getElementById('error-banner');
 
-/* ----- Estado de la aplicación ----- */
+const taskModal          = document.getElementById('task-modal');
+const modalBackdrop      = document.getElementById('modal-backdrop');
+const modalClose         = document.getElementById('modal-close');
+const modalCancel        = document.getElementById('modal-cancel-btn');
+const modalDelete        = document.getElementById('modal-delete-btn');
+const taskForm           = document.getElementById('task-form');
+const modalTitle         = document.getElementById('modal-title');
+const modalTitleInput    = document.getElementById('modal-title-input');
+const modalProjectSelect = document.getElementById('modal-project-select');
+const modalDescription   = document.getElementById('modal-description-input');
+const modalPriority      = document.getElementById('modal-priority-select');
+const modalStatus        = document.getElementById('modal-status-select');
+const modalDueDate       = document.getElementById('modal-due-date-input');
+const modalSaveBtn       = document.getElementById('modal-save-btn');
 
-/**
- * @typedef {Object} Task
- * @property {number} id
- * @property {string} text
- * @property {boolean} completed
- * @property {'high'|'medium'|'low'} priority
- * @property {string} createdAt
- * @property {string|null} dueDate
- */
+/* ----- Estado ----- */
 
-/** @type {Task[]} */
+/** @type {Array<{id:number,name:string,color:string,taskCount:number,pendingCount:number}>} */
+let projects = [];
+
+/** @type {Array<{id:number,text:string,description:string,priority:string,status:string,completed:boolean,createdAt:string,dueDate:string|null,projectId:number}>} */
 let tasks = [];
 
-/** @type {'all' | 'pending' | 'completed'} */
-let currentFilter = DEFAULT_FILTER;
-
-/** ID de la tarea en edición (null si ninguna) */
+let activeProjectId = null;
+let editingProjectId = null;
 let editingTaskId = null;
-
-/** Indica si hay una petición en curso */
 let isLoading = false;
+let colorIndex = 0;
+let draggedTaskId = null;
+let didDrag = false;
+let suppressProjectClick = false;
 
-/**
- * Caché de prioridades en memoria (la BD no persiste priority).
- * Mantiene el diseño visual durante la sesión actual.
- * @type {Map<number, string>}
- */
-const priorityCache = new Map();
+const DRAG_MIME = 'application/x-taskflow-task';
 
 /* ============================================
-   2. CLIENTE API (fetch)
+   API
    ============================================ */
 
-/**
- * Realiza una petición HTTP a la API y maneja errores.
- * @param {string} url
- * @param {RequestInit} [options]
- * @returns {Promise<any>}
- */
 async function apiRequest(url, options = {}) {
   const response = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...options.headers },
@@ -108,118 +103,105 @@ async function apiRequest(url, options = {}) {
   return response.json();
 }
 
-/**
- * Convierte el formato de la API (snake_case) al formato interno del frontend.
- * @param {Object} apiTask
- * @returns {Task}
- */
-function mapApiTask(apiTask) {
-  const cached = priorityCache.get(apiTask.id);
-  const priority = cached && VALID_PRIORITIES.includes(cached) ? cached : DEFAULT_PRIORITY;
-
+function mapApiProject(p) {
   return {
-    id: apiTask.id,
-    text: apiTask.text,
-    completed: Boolean(apiTask.completed),
-    priority,
-    createdAt: apiTask.created_at,
-    dueDate: isValidDueDate(apiTask.due_date) ? apiTask.due_date : null,
+    id: p.id,
+    name: p.name,
+    color: p.color,
+    taskCount: p.task_count ?? 0,
+    pendingCount: p.pending_count ?? 0,
+    createdAt: p.created_at,
   };
 }
 
-/** Obtiene todas las tareas desde el servidor. */
-async function fetchTasks() {
-  const data = await apiRequest(API_URL);
-  return data.map(mapApiTask);
+function mapApiTask(apiTask) {
+  return {
+    id: apiTask.id,
+    text: apiTask.text,
+    description: apiTask.description || '',
+    priority: VALID_PRIORITIES.includes(apiTask.priority) ? apiTask.priority : DEFAULT_PRIORITY,
+    status: VALID_STATUSES.includes(apiTask.status) ? apiTask.status : DEFAULT_STATUS,
+    completed: Boolean(apiTask.completed),
+    createdAt: apiTask.created_at,
+    dueDate: isValidDueDate(apiTask.due_date) ? apiTask.due_date : null,
+    projectId: apiTask.project_id,
+  };
 }
 
-/**
- * Crea una tarea en el servidor.
- * @param {Object} payload
- */
-async function apiCreateTask(payload) {
-  const data = await apiRequest(API_URL, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-  return data;
+async function fetchProjects() {
+  return (await apiRequest(API_PROJECTS)).map(mapApiProject);
 }
 
-/**
- * Actualiza una tarea en el servidor.
- * @param {number} id
- * @param {Object} payload
- */
-async function apiUpdateTask(id, payload) {
-  const data = await apiRequest(`${API_URL}/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
-  return mapApiTask(data);
+async function fetchTasks(projectId) {
+  return (await apiRequest(`${API_TASKS}?project_id=${projectId}`)).map(mapApiTask);
 }
 
-/** Elimina una tarea del servidor. */
-async function apiDeleteTask(id) {
-  await apiRequest(`${API_URL}/${id}`, { method: 'DELETE' });
-}
-
-/** Muestra un mensaje de error temporal en la UI. */
 function showError(message) {
   errorBanner.textContent = message;
   errorBanner.classList.remove('hidden');
 }
 
-/** Oculta el banner de error. */
 function hideError() {
   errorBanner.classList.add('hidden');
   errorBanner.textContent = '';
 }
 
-/** Activa/desactiva controles mientras hay peticiones en curso. */
 function setLoading(loading) {
   isLoading = loading;
-  taskInput.disabled = loading;
-  prioritySelect.disabled = loading;
-  dueDateInput.disabled = loading;
-  addTaskBtn.disabled = loading;
-  clearCompletedBtn.disabled = loading;
+  addTaskBtn.disabled = loading || !activeProjectId;
+  projectNameInput.disabled = loading;
+  modalSaveBtn.disabled = loading;
 }
 
 /* ============================================
-   3. OPERACIONES SOBRE TAREAS
+   PROYECTOS
    ============================================ */
 
-/**
- * Recarga las tareas desde la API y actualiza la UI.
- */
-async function reloadTasks() {
-  tasks = await fetchTasks();
-  render();
+function getActiveProject() {
+  return projects.find((p) => p.id === activeProjectId) ?? null;
 }
 
-/**
- * Agrega una nueva tarea vía POST /tasks.
- */
-async function addTask(text, priority, dueDate) {
-  const trimmed = text.trim();
-  if (!trimmed || isLoading) return;
+function nextProjectColor() {
+  const color = PROJECT_COLORS[colorIndex % PROJECT_COLORS.length];
+  colorIndex += 1;
+  return color;
+}
+
+async function reloadProjects() {
+  projects = await fetchProjects();
+  renderProjects();
+  populateProjectSelect();
+
+  if (projects.length === 0) return;
+
+  const stored = Number(localStorage.getItem(PROJECT_STORAGE_KEY));
+  const exists = projects.some((p) => p.id === stored);
+
+  if (!activeProjectId || !projects.some((p) => p.id === activeProjectId)) {
+    activeProjectId = exists ? stored : projects[0].id;
+    localStorage.setItem(PROJECT_STORAGE_KEY, String(activeProjectId));
+  }
+
+  updateProjectHeader();
+}
+
+async function selectProject(id) {
+  if (activeProjectId === id) {
+    closeSidebar();
+    return;
+  }
+
+  activeProjectId = id;
+  editingProjectId = null;
+  localStorage.setItem(PROJECT_STORAGE_KEY, String(id));
+  updateProjectHeader();
+  closeSidebar();
 
   try {
     setLoading(true);
     hideError();
-
-    const selectedPriority = VALID_PRIORITIES.includes(priority) ? priority : DEFAULT_PRIORITY;
-    const created = await apiCreateTask({
-      text: trimmed,
-      due_date: isValidDueDate(dueDate) ? dueDate : null,
-      completed: false,
-    });
-
-    priorityCache.set(created.id, selectedPriority);
-    await reloadTasks();
-    taskInput.value = '';
-    dueDateInput.value = '';
-    taskInput.focus();
+    tasks = await fetchTasks(id);
+    renderBoard();
   } catch (error) {
     showError(error.message);
   } finally {
@@ -227,20 +209,46 @@ async function addTask(text, priority, dueDate) {
   }
 }
 
-/**
- * Actualiza el texto de una tarea vía PUT /tasks/:id.
- */
-async function updateTaskText(id, newText) {
-  const trimmed = newText.trim();
+async function createProject(name) {
+  const trimmed = name.trim();
+  if (!trimmed || isLoading) return;
+
+  try {
+    setLoading(true);
+    hideError();
+
+    const created = await apiRequest(API_PROJECTS, {
+      method: 'POST',
+      body: JSON.stringify({ name: trimmed, color: nextProjectColor() }),
+    });
+
+    await reloadProjects();
+    activeProjectId = created.id;
+    localStorage.setItem(PROJECT_STORAGE_KEY, String(created.id));
+    projectNameInput.value = '';
+    await selectProject(created.id);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function renameProject(id, newName) {
+  const trimmed = newName.trim();
   if (!trimmed) return false;
 
-  const task = tasks.find((t) => t.id === id);
-  if (!task || task.text === trimmed) return false;
+  const project = projects.find((p) => p.id === id);
+  if (!project || project.name === trimmed) return false;
 
   try {
     hideError();
-    await apiUpdateTask(id, { text: trimmed });
-    await reloadTasks();
+    await apiRequest(`${API_PROJECTS}/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name: trimmed }),
+    });
+    await reloadProjects();
+    updateProjectHeader();
     return true;
   } catch (error) {
     showError(error.message);
@@ -248,118 +256,586 @@ async function updateTaskText(id, newText) {
   }
 }
 
-/** Alterna el estado completado vía PUT /tasks/:id. */
-async function toggleTask(id) {
-  const task = tasks.find((t) => t.id === id);
-  if (!task || isLoading) return;
+async function deleteProject(id) {
+  const project = projects.find((p) => p.id === id);
+  if (!project || isLoading) return;
 
-  try {
-    setLoading(true);
-    hideError();
-    await apiUpdateTask(id, { completed: !task.completed });
-    await reloadTasks();
-  } catch (error) {
-    showError(error.message);
-    render();
-  } finally {
-    setLoading(false);
+  if (projects.length <= 1) {
+    showError('No puedes eliminar el último proyecto.');
+    return;
   }
-}
-
-/**
- * Elimina una tarea con animación y DELETE /tasks/:id.
- */
-async function deleteTask(id) {
-  if (editingTaskId === id) editingTaskId = null;
-
-  const listItem = taskList.querySelector(`[data-id="${id}"]`);
-
-  const performDelete = async () => {
-    try {
-      hideError();
-      await apiDeleteTask(id);
-      await reloadTasks();
-    } catch (error) {
-      showError(error.message);
-    }
-  };
-
-  if (listItem) {
-    listItem.classList.add('task-item--leaving');
-    listItem.addEventListener('animationend', () => performDelete(), { once: true });
-  } else {
-    await performDelete();
-  }
-}
-
-/** Elimina todas las tareas completadas (varias peticiones DELETE). */
-async function clearCompleted() {
-  const completedTasks = tasks.filter((t) => t.completed);
-  if (completedTasks.length === 0 || isLoading) return;
 
   const confirmed = window.confirm(
-    `¿Eliminar ${completedTasks.length} tarea${completedTasks.length > 1 ? 's' : ''} completada${completedTasks.length > 1 ? 's' : ''}?`
+    `¿Eliminar el proyecto "${project.name}" y todas sus tareas?`
   );
   if (!confirmed) return;
 
   try {
     setLoading(true);
     hideError();
+    await apiRequest(`${API_PROJECTS}/${id}`, { method: 'DELETE' });
 
-    if (editingTaskId && completedTasks.some((t) => t.id === editingTaskId)) {
-      editingTaskId = null;
+    if (activeProjectId === id) activeProjectId = null;
+    editingProjectId = null;
+    closeModal();
+
+    await reloadProjects();
+    if (activeProjectId) {
+      tasks = await fetchTasks(activeProjectId);
+    } else {
+      tasks = [];
     }
-
-    await Promise.all(completedTasks.map((t) => apiDeleteTask(t.id)));
-    await reloadTasks();
+    renderBoard();
   } catch (error) {
     showError(error.message);
-    await reloadTasks();
   } finally {
     setLoading(false);
   }
 }
 
-/** Cambia el filtro activo de visualización. */
-function setFilter(filter) {
-  currentFilter = filter;
-  updateFilterUI();
-  render();
+function updateProjectHeader() {
+  const project = getActiveProject();
+
+  if (!project) {
+    projectTitle.textContent = 'Sin proyectos';
+    projectColorDot.style.background = '#94a3b8';
+    return;
+  }
+
+  projectTitle.textContent = project.name;
+  projectColorDot.style.background = project.color;
+}
+
+function populateProjectSelect() {
+  modalProjectSelect.innerHTML = '';
+  projects.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = String(p.id);
+    opt.textContent = p.name;
+    modalProjectSelect.appendChild(opt);
+  });
+}
+
+function renderProjects() {
+  projectList.innerHTML = '';
+
+  projects.forEach((project) => {
+    const li = document.createElement('li');
+    const isActive = project.id === activeProjectId;
+    const isEditing = editingProjectId === project.id;
+
+    if (isEditing) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'project-edit-input';
+      input.value = project.name;
+      input.maxLength = 50;
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); finishProjectEdit(project.id, input.value); }
+        if (e.key === 'Escape') { e.preventDefault(); cancelProjectEdit(); }
+      });
+      input.addEventListener('blur', () => finishProjectEdit(project.id, input.value));
+
+      li.appendChild(input);
+      projectList.appendChild(li);
+      requestAnimationFrame(() => { input.focus(); input.select(); });
+      return;
+    }
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `project-item${isActive ? ' project-item--active' : ''}`;
+    btn.dataset.projectId = String(project.id);
+    btn.innerHTML = `
+      <span class="project-item__dot" style="background:${project.color}"></span>
+      <span class="project-item__name">${escapeHtml(project.name)}</span>
+      <span class="project-item__count">${project.pendingCount || project.taskCount}</span>
+    `;
+    btn.addEventListener('click', () => {
+      if (suppressProjectClick || didDrag) return;
+      selectProject(project.id);
+    });
+    btn.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      startProjectEdit(project.id);
+    });
+
+    btn.addEventListener('dragover', (e) => {
+      if (!isTaskDragEvent(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      btn.classList.add('project-item--drag-over');
+    });
+
+    btn.addEventListener('dragleave', (e) => {
+      if (!btn.contains(e.relatedTarget)) {
+        btn.classList.remove('project-item--drag-over');
+      }
+    });
+
+    btn.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      btn.classList.remove('project-item--drag-over');
+
+      const payload = getDragPayload(e);
+      if (!payload) return;
+
+      const targetProjectId = project.id;
+      if (payload.projectId === targetProjectId) return;
+
+      suppressProjectClick = true;
+      setTimeout(() => { suppressProjectClick = false; }, 300);
+
+      await moveTask(payload.taskId, { projectId: targetProjectId });
+    });
+
+    li.appendChild(btn);
+    projectList.appendChild(li);
+  });
+}
+
+function startProjectEdit(id) {
+  editingProjectId = id;
+  renderProjects();
+}
+
+async function finishProjectEdit(id, newName) {
+  const trimmed = newName.trim();
+  const project = projects.find((p) => p.id === id);
+
+  editingProjectId = null;
+
+  if (!trimmed || !project || project.name === trimmed) {
+    renderProjects();
+    return;
+  }
+
+  await renameProject(id, trimmed);
+  renderProjects();
+}
+
+function cancelProjectEdit() {
+  editingProjectId = null;
+  renderProjects();
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 /* ============================================
-   4. FILTRADO, CONTADOR Y UTILIDADES
+   TAREAS
    ============================================ */
 
-function getFilteredTasks() {
-  let filtered;
+async function reloadTasks() {
+  if (!activeProjectId) { tasks = []; renderBoard(); return; }
+  tasks = await fetchTasks(activeProjectId);
+  await reloadProjects();
+  renderBoard();
+}
 
-  switch (currentFilter) {
-    case 'pending':
-      filtered = tasks.filter((t) => !t.completed);
-      break;
-    case 'completed':
-      filtered = tasks.filter((t) => t.completed);
-      break;
-    default:
-      filtered = tasks;
+async function saveTask(data) {
+  const payload = {
+    text: data.text.trim(),
+    description: data.description.trim(),
+    priority: data.priority,
+    status: data.status,
+    due_date: isValidDueDate(data.dueDate) ? data.dueDate : null,
+    project_id: Number(data.projectId),
+  };
+
+  if (!payload.text) throw new Error('El título es obligatorio.');
+
+  if (data.id) {
+    return apiRequest(`${API_TASKS}/${data.id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
   }
 
-  return sortByDueDate(filtered);
+  return apiRequest(API_TASKS, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
+
+function getDragPayload(event) {
+  try {
+    const raw = event.dataTransfer.getData(DRAG_MIME);
+    if (raw) return JSON.parse(raw);
+  } catch { /* fallback abajo */ }
+
+  const taskId = Number(event.dataTransfer.getData('text/plain') || draggedTaskId);
+  if (!taskId) return null;
+
+  const task = tasks.find((t) => t.id === taskId);
+  return task
+    ? { taskId: task.id, status: task.status, projectId: task.projectId }
+    : { taskId, status: DEFAULT_STATUS, projectId: activeProjectId };
+}
+
+function setDragPayload(event, task) {
+  const payload = { taskId: task.id, status: task.status, projectId: task.projectId };
+  event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+  event.dataTransfer.setData('text/plain', String(task.id));
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.dropEffect = 'move';
+}
+
+function isTaskDragEvent(event) {
+  if (draggedTaskId) return true;
+  const types = event.dataTransfer?.types;
+  if (!types || types.length === 0) return false;
+  for (let i = 0; i < types.length; i += 1) {
+    if (types[i] === 'text/plain' || types[i] === DRAG_MIME) return true;
+  }
+  return false;
+}
+
+function clearDragHighlights() {
+  document.querySelectorAll('.kanban-column__body--drag-over').forEach((el) => {
+    el.classList.remove('kanban-column__body--drag-over');
+  });
+  document.querySelectorAll('.project-item--drag-over').forEach((el) => {
+    el.classList.remove('project-item--drag-over');
+  });
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function captureCardPositions() {
+  const positions = new Map();
+  document.querySelectorAll('.kanban-card[data-id]').forEach((card) => {
+    positions.set(card.dataset.id, card.getBoundingClientRect());
+  });
+  return positions;
+}
+
+function getMoveDirection(fromStatus, toStatus) {
+  const from = STATUS_INDEX[fromStatus] ?? 0;
+  const to = STATUS_INDEX[toStatus] ?? 0;
+  if (to > from) return 'forward';
+  if (to < from) return 'backward';
+  return 'none';
+}
+
+function pulseColumn(status) {
+  const col = document.querySelector(`.kanban-column--${status}`);
+  if (!col) return;
+
+  col.classList.add('kanban-column--receive');
+  col.addEventListener('animationend', () => col.classList.remove('kanban-column--receive'), { once: true });
+
+  const count = col.querySelector('.kanban-column__count');
+  if (count) {
+    count.classList.add('kanban-column__count--pulse');
+    count.addEventListener('animationend', () => count.classList.remove('kanban-column__count--pulse'), { once: true });
+  }
+}
+
+function pulseProject(projectId) {
+  const btn = document.querySelector(`.project-item[data-project-id="${projectId}"]`);
+  if (!btn) return;
+
+  btn.classList.add('project-item--receive');
+  btn.addEventListener('animationend', () => btn.classList.remove('project-item--receive'), { once: true });
+}
+
+function runMoveAnimations(beforePositions, { movedTaskId, fromStatus, toStatus }) {
+  if (prefersReducedMotion() || !beforePositions) return;
+
+  const movedId = String(movedTaskId);
+  const direction = getMoveDirection(fromStatus, toStatus);
+  const enterClass = direction === 'backward' ? 'kanban-card--enter-back' : 'kanban-card--enter-forward';
+
+  document.querySelectorAll('.kanban-card[data-id]').forEach((card) => {
+    const id = card.dataset.id;
+
+    if (id === movedId) {
+      card.classList.add(enterClass);
+      card.addEventListener('animationend', () => card.classList.remove(enterClass), { once: true });
+      return;
+    }
+
+    const before = beforePositions.get(id);
+    if (!before) return;
+
+    const after = card.getBoundingClientRect();
+    const dx = before.left - after.left;
+    const dy = before.top - after.top;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+
+    card.classList.add('kanban-card--flip');
+    card.style.transform = `translate(${dx}px, ${dy}px)`;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        card.style.transform = 'translate(0, 0)';
+      });
+    });
+
+    const cleanup = () => {
+      card.classList.remove('kanban-card--flip');
+      card.style.transform = '';
+    };
+    card.addEventListener('transitionend', cleanup, { once: true });
+    setTimeout(cleanup, 500);
+  });
+
+  if (toStatus) pulseColumn(toStatus);
+}
+
+function animateCardSpawn(taskId) {
+  if (prefersReducedMotion()) return;
+
+  requestAnimationFrame(() => {
+    const card = document.querySelector(`.kanban-card[data-id="${taskId}"]`);
+    if (!card) return;
+    card.classList.add('kanban-card--spawn');
+    card.addEventListener('animationend', () => card.classList.remove('kanban-card--spawn'), { once: true });
+    pulseColumn(card.closest('.kanban-column')?.dataset.status);
+  });
+}
+
+function animateCardExit(taskId) {
+  if (prefersReducedMotion()) return Promise.resolve();
+
+  const card = document.querySelector(`.kanban-card[data-id="${taskId}"]`);
+  if (!card) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    card.classList.add('kanban-card--exit');
+    card.addEventListener('animationend', done, { once: true });
+    setTimeout(done, 320);
+  });
+}
+
+async function moveTask(id, { status, projectId }, optimistic = true) {
+  const task = tasks.find((t) => t.id === id);
+  if (!task || isLoading) return false;
+
+  const newStatus = status ?? task.status;
+  const newProjectId = projectId ?? task.projectId;
+
+  if (task.status === newStatus && task.projectId === newProjectId) return false;
+
+  const payload = {};
+  if (newStatus !== task.status) payload.status = newStatus;
+  if (newProjectId !== task.projectId) payload.project_id = newProjectId;
+
+  const snapshot = { ...task };
+  const fromStatus = task.status;
+  const isColumnMove = newProjectId === activeProjectId && newStatus !== fromStatus;
+  const isProjectMove = newProjectId !== activeProjectId && snapshot.projectId === activeProjectId;
+
+  if (optimistic) {
+    const beforePositions = isColumnMove ? captureCardPositions() : null;
+
+    if (isProjectMove) {
+      await animateCardExit(id);
+    }
+
+    task.status = newStatus;
+    task.completed = newStatus === 'done';
+    task.projectId = newProjectId;
+    if (newProjectId !== activeProjectId) {
+      tasks = tasks.filter((t) => t.id !== id);
+    }
+    renderBoard();
+    renderProjects();
+
+    if (isColumnMove && beforePositions) {
+      requestAnimationFrame(() => {
+        runMoveAnimations(beforePositions, {
+          movedTaskId: id,
+          fromStatus,
+          toStatus: newStatus,
+        });
+      });
+    }
+
+    if (isProjectMove) {
+      pulseProject(newProjectId);
+    }
+  }
+
+  try {
+    hideError();
+    await apiRequest(`${API_TASKS}/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    await reloadProjects();
+    if (newProjectId === activeProjectId) {
+      tasks = await fetchTasks(activeProjectId);
+      renderBoard();
+    }
+    return true;
+  } catch (error) {
+    if (optimistic) {
+      if (snapshot.projectId === activeProjectId && newProjectId !== activeProjectId) {
+        tasks.push(snapshot);
+        tasks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      } else {
+        Object.assign(task, snapshot);
+      }
+      renderBoard();
+      renderProjects();
+    }
+    showError(error.message);
+    return false;
+  }
+}
+
+async function deleteTask(id) {
+  try {
+    hideError();
+    await apiRequest(`${API_TASKS}/${id}`, { method: 'DELETE' });
+    closeModal();
+    await reloadTasks();
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+async function clearDoneTasks() {
+  const doneTasks = tasks.filter((t) => t.status === 'done');
+  if (doneTasks.length === 0 || isLoading || !activeProjectId) return;
+
+  const confirmed = window.confirm(
+    `¿Eliminar ${doneTasks.length} tarea${doneTasks.length > 1 ? 's' : ''} terminada${doneTasks.length > 1 ? 's' : ''}?`
+  );
+  if (!confirmed) return;
+
+  try {
+    setLoading(true);
+    hideError();
+    await apiRequest(`${API_TASKS}/done/bulk?project_id=${activeProjectId}`, { method: 'DELETE' });
+    await reloadTasks();
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function getTasksByStatus(status) {
+  return tasks.filter((t) => t.status === status);
+}
+
+/* ============================================
+   MODAL
+   ============================================ */
+
+function openModal(taskId = null, defaultStatus = DEFAULT_STATUS) {
+  editingTaskId = taskId;
+  hideError();
+
+  if (taskId) {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    modalTitle.textContent = 'Editar tarea';
+    modalTitleInput.value = task.text;
+    modalDescription.value = task.description;
+    modalPriority.value = task.priority;
+    modalStatus.value = task.status;
+    modalDueDate.value = task.dueDate || '';
+    modalProjectSelect.value = String(task.projectId);
+    modalDelete.classList.remove('hidden');
+  } else {
+    modalTitle.textContent = 'Nueva tarea';
+    modalTitleInput.value = '';
+    modalDescription.value = '';
+    modalPriority.value = DEFAULT_PRIORITY;
+    modalStatus.value = defaultStatus;
+    modalDueDate.value = '';
+    modalProjectSelect.value = String(activeProjectId || projects[0]?.id || '');
+    modalDelete.classList.add('hidden');
+  }
+
+  taskModal.classList.remove('hidden');
+  document.body.classList.add('modal-open');
+  requestAnimationFrame(() => modalTitleInput.focus());
+}
+
+function closeModal() {
+  editingTaskId = null;
+  taskModal.classList.add('hidden');
+  document.body.classList.remove('modal-open');
+  taskForm.reset();
+}
+
+async function handleModalSubmit(e) {
+  e.preventDefault();
+  if (isLoading) return;
+
+  try {
+    setLoading(true);
+    hideError();
+
+    const existingTask = editingTaskId ? tasks.find((t) => t.id === editingTaskId) : null;
+    const newStatus = modalStatus.value;
+    const savedProjectId = Number(modalProjectSelect.value);
+    const beforePositions = existingTask
+      && savedProjectId === activeProjectId
+      && existingTask.status !== newStatus
+      ? captureCardPositions()
+      : null;
+
+    const saved = await saveTask({
+      id: editingTaskId,
+      text: modalTitleInput.value,
+      description: modalDescription.value,
+      priority: modalPriority.value,
+      status: newStatus,
+      dueDate: modalDueDate.value,
+      projectId: modalProjectSelect.value,
+    });
+
+    closeModal();
+
+    if (savedProjectId !== activeProjectId) {
+      await selectProject(savedProjectId);
+    } else if (!editingTaskId) {
+      await reloadTasks();
+      animateCardSpawn(saved.id);
+    } else {
+      await reloadTasks();
+      if (beforePositions && existingTask) {
+        requestAnimationFrame(() => {
+          runMoveAnimations(beforePositions, {
+            movedTaskId: editingTaskId,
+            fromStatus: existingTask.status,
+            toStatus: newStatus,
+          });
+        });
+      }
+    }
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+/* ============================================
+   UTILIDADES
+   ============================================ */
 
 function isValidDueDate(dateStr) {
   if (!dateStr || typeof dateStr !== 'string') return false;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
-
   const [year, month, day] = dateStr.split('-').map(Number);
   const date = new Date(year, month - 1, day);
-
-  return (
-    date.getFullYear() === year &&
-    date.getMonth() === month - 1 &&
-    date.getDate() === day
-  );
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
 function parseDueDate(dateStr) {
@@ -373,28 +849,13 @@ function getTodayAtMidnight() {
 }
 
 function isOverdue(task) {
-  if (!task.dueDate || task.completed) return false;
+  if (!task.dueDate || task.status === 'done') return false;
   return parseDueDate(task.dueDate) < getTodayAtMidnight();
 }
 
 function isDueToday(task) {
-  if (!task.dueDate || task.completed) return false;
+  if (!task.dueDate || task.status === 'done') return false;
   return parseDueDate(task.dueDate).getTime() === getTodayAtMidnight().getTime();
-}
-
-function sortByDueDate(taskList) {
-  return [...taskList].sort((a, b) => {
-    if (!a.dueDate && !b.dueDate) {
-      return new Date(b.createdAt) - new Date(a.createdAt);
-    }
-    if (!a.dueDate) return 1;
-    if (!b.dueDate) return -1;
-
-    const dateCompare = a.dueDate.localeCompare(b.dueDate);
-    if (dateCompare !== 0) return dateCompare;
-
-    return new Date(b.createdAt) - new Date(a.createdAt);
-  });
 }
 
 function formatDueDate(dateStr) {
@@ -403,69 +864,31 @@ function formatDueDate(dateStr) {
   return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
 }
 
-function formatCreatedAt(isoString) {
-  const date = new Date(isoString);
-  const now = new Date();
-
-  const isToday =
-    date.getDate() === now.getDate() &&
-    date.getMonth() === now.getMonth() &&
-    date.getFullYear() === now.getFullYear();
-
-  if (isToday) return 'Hoy';
-
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const isYesterday =
-    date.getDate() === yesterday.getDate() &&
-    date.getMonth() === yesterday.getMonth() &&
-    date.getFullYear() === yesterday.getFullYear();
-
-  if (isYesterday) return 'Ayer';
-
-  return date.toLocaleDateString('es-ES', {
-    day: 'numeric',
-    month: 'short',
-    year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
-  });
-}
-
 function updateCounter() {
-  const pending = tasks.filter((t) => !t.completed).length;
+  const pending = tasks.filter((t) => t.status !== 'done').length;
   const overdue = tasks.filter((t) => isOverdue(t)).length;
-  const total   = tasks.length;
+  const total = tasks.length;
+  const project = getActiveProject();
 
-  if (isLoading && total === 0) {
+  if (!project) {
+    taskCounter.textContent = 'Crea un proyecto para empezar';
+  } else if (isLoading && total === 0) {
     taskCounter.textContent = 'Cargando tareas...';
   } else if (total === 0) {
-    taskCounter.textContent = 'Sin tareas — ¡empieza agregando una!';
+    taskCounter.textContent = 'Proyecto vacío — crea tu primera tarea';
   } else if (pending === 0) {
-    taskCounter.textContent = '¡Todas las tareas completadas!';
+    taskCounter.textContent = '¡Todas las tareas terminadas!';
   } else if (overdue > 0) {
-    taskCounter.textContent = `${pending} pendiente${pending > 1 ? 's' : ''} · ${overdue} vencida${overdue > 1 ? 's' : ''}`;
+    taskCounter.textContent = `${pending} activa${pending > 1 ? 's' : ''} · ${overdue} vencida${overdue > 1 ? 's' : ''}`;
   } else if (pending === 1) {
-    taskCounter.textContent = '1 tarea pendiente';
+    taskCounter.textContent = '1 tarea activa';
   } else {
-    taskCounter.textContent = `${pending} tareas pendientes`;
+    taskCounter.textContent = `${pending} tareas activas`;
   }
 }
 
-function updateFooter() {
-  const hasCompleted = tasks.some((t) => t.completed);
-  taskFooter.classList.toggle('hidden', !hasCompleted);
-}
-
-function updateFilterUI() {
-  filterButtons.forEach((btn) => {
-    const isActive = btn.dataset.filter === currentFilter;
-    btn.classList.toggle('filter-btn--active', isActive);
-    btn.setAttribute('aria-selected', String(isActive));
-  });
-}
-
 /* ============================================
-   5. RENDERIZADO DEL DOM
+   KANBAN — RENDERIZADO
    ============================================ */
 
 function createPriorityBadge(priority) {
@@ -476,200 +899,238 @@ function createPriorityBadge(priority) {
   return badge;
 }
 
-function createDueDateLabel(task) {
-  if (!task.dueDate) return null;
+function createKanbanCard(task) {
+  const config = PRIORITY_CONFIG[task.priority];
+  const card = document.createElement('article');
+  card.className = `kanban-card kanban-card--priority-${config.cssClass}`;
+  if (isOverdue(task)) card.classList.add('kanban-card--overdue');
+  if (task.status === 'done') card.classList.add('kanban-card--done');
+  card.dataset.id = String(task.id);
+  card.draggable = !isLoading;
 
-  const overdue = isOverdue(task);
-  const dueToday = isDueToday(task);
-
-  const label = document.createElement('span');
-  label.className = 'task-due-date';
-  if (overdue) label.classList.add('task-due-date--overdue');
-  else if (dueToday) label.classList.add('task-due-date--today');
-
-  const prefix = overdue ? 'Vencida:' : dueToday ? 'Vence hoy:' : 'Vence:';
-
-  label.innerHTML = `
-    <svg class="task-due-date__icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-    </svg>
-    ${prefix} ${formatDueDate(task.dueDate)}
-  `;
-
-  return label;
-}
-
-function createActionButtons(task) {
-  const actions = document.createElement('div');
-  actions.className = 'task-actions';
-
-  const editBtn = document.createElement('button');
-  editBtn.type = 'button';
-  editBtn.className = 'action-btn action-btn--edit';
-  editBtn.setAttribute('aria-label', `Editar "${task.text}"`);
-  editBtn.innerHTML = `
-    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+  const handle = document.createElement('div');
+  handle.className = 'kanban-card__handle';
+  handle.setAttribute('role', 'button');
+  handle.setAttribute('tabindex', '0');
+  handle.setAttribute('aria-label', `Mover tarea: ${task.text}`);
+  handle.title = 'Arrastrar para mover';
+  handle.innerHTML = `
+    <svg class="kanban-card__grip" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="9" cy="7" r="1.5"/><circle cx="15" cy="7" r="1.5"/>
+      <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+      <circle cx="9" cy="17" r="1.5"/><circle cx="15" cy="17" r="1.5"/>
     </svg>
   `;
-  editBtn.addEventListener('click', () => startEditing(task.id));
 
-  const deleteBtn = document.createElement('button');
-  deleteBtn.type = 'button';
-  deleteBtn.className = 'action-btn action-btn--delete';
-  deleteBtn.setAttribute('aria-label', `Eliminar "${task.text}"`);
-  deleteBtn.innerHTML = `
-    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-    </svg>
-  `;
-  deleteBtn.addEventListener('click', () => deleteTask(task.id));
-
-  actions.append(editBtn, deleteBtn);
-  return actions;
-}
-
-function createTaskContent(task) {
   const content = document.createElement('div');
-  content.className = 'task-content';
+  content.className = 'kanban-card__content';
+  content.setAttribute('role', 'button');
+  content.setAttribute('tabindex', '0');
+  content.setAttribute('aria-label', `Editar tarea: ${task.text}`);
 
-  const isEditing = editingTaskId === task.id;
+  const title = document.createElement('h4');
+  title.className = 'kanban-card__title';
+  title.textContent = task.text;
+  content.appendChild(title);
 
-  if (isEditing) {
-    const editInput = document.createElement('input');
-    editInput.type = 'text';
-    editInput.className = 'task-edit-input';
-    editInput.value = task.text;
-    editInput.maxLength = 200;
-    editInput.setAttribute('aria-label', 'Editar texto de la tarea');
-
-    editInput.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        finishEditing(task.id, editInput.value);
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        cancelEditing();
-      }
-    });
-
-    editInput.addEventListener('blur', () => {
-      finishEditing(task.id, editInput.value);
-    });
-
-    content.appendChild(editInput);
-
-    requestAnimationFrame(() => {
-      editInput.focus();
-      editInput.select();
-    });
-  } else {
-    const textSpan = document.createElement('span');
-    textSpan.className = `task-text ${task.completed ? 'task-text--completed' : ''}`;
-    textSpan.textContent = task.text;
-    textSpan.title = 'Doble clic para editar';
-    textSpan.addEventListener('dblclick', () => startEditing(task.id));
-    content.appendChild(textSpan);
+  if (task.description) {
+    const desc = document.createElement('p');
+    desc.className = 'kanban-card__description';
+    desc.textContent = task.description;
+    content.appendChild(desc);
   }
 
   const meta = document.createElement('div');
-  meta.className = 'task-meta';
+  meta.className = 'kanban-card__meta';
   meta.appendChild(createPriorityBadge(task.priority));
 
-  const dueDateLabel = createDueDateLabel(task);
-  if (dueDateLabel) meta.appendChild(dueDateLabel);
-
-  meta.appendChild(
-    Object.assign(document.createElement('span'), {
-      className: 'task-date',
-      textContent: `Creada: ${formatCreatedAt(task.createdAt)}`,
-    })
-  );
+  if (task.dueDate) {
+    const due = document.createElement('span');
+    due.className = 'task-due-date';
+    if (isOverdue(task)) due.classList.add('task-due-date--overdue');
+    else if (isDueToday(task)) due.classList.add('task-due-date--today');
+    due.innerHTML = `
+      <svg class="task-due-date__icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+      </svg>
+      ${formatDueDate(task.dueDate)}
+    `;
+    meta.appendChild(due);
+  }
 
   content.appendChild(meta);
-  return content;
-}
+  card.append(handle, content);
 
-function createTaskElement(task) {
-  const config = PRIORITY_CONFIG[task.priority];
-  const li = document.createElement('li');
-  li.className = `task-item task-item--entering task-item--priority-${config.cssClass}`;
+  const openTask = () => {
+    if (didDrag) return;
+    openModal(task.id);
+  };
 
-  if (isOverdue(task)) {
-    li.classList.add('task-item--overdue');
-  }
-
-  li.dataset.id = String(task.id);
-
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.className = 'task-checkbox';
-  checkbox.checked = task.completed;
-  checkbox.disabled = isLoading;
-  checkbox.setAttribute('aria-label', `Marcar "${task.text}" como completada`);
-  checkbox.addEventListener('change', () => toggleTask(task.id));
-
-  li.append(checkbox, createTaskContent(task), createActionButtons(task));
-  return li;
-}
-
-function render() {
-  const filtered = getFilteredTasks();
-
-  taskList.innerHTML = '';
-
-  filtered.forEach((task) => {
-    taskList.appendChild(createTaskElement(task));
+  content.addEventListener('click', openTask);
+  content.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openTask();
+    }
   });
 
-  const isEmpty = filtered.length === 0;
-  emptyState.classList.toggle('hidden', !isEmpty);
-  taskList.classList.toggle('hidden', isEmpty);
+  handle.addEventListener('click', (e) => e.stopPropagation());
 
+  handle.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+  });
+
+  card.addEventListener('dragstart', (e) => {
+    if (isLoading || !e.target.closest('.kanban-card__handle')) {
+      e.preventDefault();
+      return;
+    }
+
+    didDrag = true;
+    draggedTaskId = task.id;
+    card.classList.add('kanban-card--dragging');
+    setDragPayload(e, task);
+
+    projectList.classList.add('project-list--drag-active');
+
+    if (window.innerWidth <= 768) {
+      sidebar.classList.add('sidebar--open');
+      sidebarOverlay.classList.remove('hidden');
+    }
+  });
+
+  card.addEventListener('dragend', () => {
+    card.classList.remove('kanban-card--dragging');
+    draggedTaskId = null;
+    projectList.classList.remove('project-list--drag-active');
+    clearDragHighlights();
+    setTimeout(() => { didDrag = false; }, 0);
+  });
+
+  return card;
+}
+
+function createKanbanColumn(column) {
+  const columnTasks = getTasksByStatus(column.id);
+
+  const col = document.createElement('section');
+  col.className = `kanban-column kanban-column--${column.id}`;
+  col.dataset.status = column.id;
+  col.setAttribute('aria-label', column.label);
+
+  const header = document.createElement('header');
+  header.className = 'kanban-column__header';
+  header.innerHTML = `
+    <div class="kanban-column__title-row">
+      <span class="kanban-column__indicator" style="background:${column.color}"></span>
+      <h3 class="kanban-column__title">${column.label}</h3>
+      <span class="kanban-column__count">${columnTasks.length}</span>
+    </div>
+  `;
+
+  if (column.id === 'todo') {
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'kanban-column__add';
+    addBtn.setAttribute('aria-label', 'Agregar tarea');
+    addBtn.title = 'Agregar tarea';
+    addBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>`;
+    addBtn.addEventListener('click', () => openModal(null, 'todo'));
+    header.appendChild(addBtn);
+  }
+
+  if (column.id === 'done' && columnTasks.length > 0) {
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'kanban-column__clear';
+    clearBtn.title = 'Limpiar terminadas';
+    clearBtn.setAttribute('aria-label', 'Limpiar tareas terminadas');
+    clearBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>`;
+    clearBtn.addEventListener('click', clearDoneTasks);
+    header.appendChild(clearBtn);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'kanban-column__body';
+  body.dataset.status = column.id;
+
+  const highlightColumn = () => body.classList.add('kanban-column__body--drag-over');
+  const unhighlightColumn = () => body.classList.remove('kanban-column__body--drag-over');
+
+  const handleColumnDragOver = (e) => {
+    if (!isTaskDragEvent(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    highlightColumn();
+  };
+
+  const handleColumnDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    unhighlightColumn();
+
+    const payload = getDragPayload(e);
+    if (!payload) return;
+
+    await moveTask(payload.taskId, { status: column.id });
+  };
+
+  col.addEventListener('dragover', handleColumnDragOver);
+  col.addEventListener('dragleave', (e) => {
+    if (!col.contains(e.relatedTarget)) unhighlightColumn();
+  });
+  col.addEventListener('drop', handleColumnDrop);
+
+  if (columnTasks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'kanban-column__empty';
+    empty.textContent = column.id === 'todo' ? 'Arrastra tareas aquí o crea una nueva' : 'Sin tareas';
+    body.appendChild(empty);
+  } else {
+    columnTasks.forEach((task) => body.appendChild(createKanbanCard(task)));
+  }
+
+  col.append(header, body);
+  return col;
+}
+
+function renderBoard() {
+  kanbanBoard.innerHTML = '';
+
+  if (!activeProjectId) {
+    const empty = document.createElement('div');
+    empty.className = 'kanban-empty';
+    empty.innerHTML = `
+      <div class="empty-state__icon">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"/>
+        </svg>
+      </div>
+      <p class="empty-state__title">Crea un proyecto para empezar</p>
+      <p class="empty-state__subtitle">Usa el panel lateral para organizar tus tareas</p>
+    `;
+    kanbanBoard.appendChild(empty);
+    updateCounter();
+    return;
+  }
+
+  COLUMNS.forEach((col) => kanbanBoard.appendChild(createKanbanColumn(col)));
   updateCounter();
-  updateFooter();
 }
 
 /* ============================================
-   6. EDICIÓN INLINE
+   SIDEBAR Y TEMA
    ============================================ */
 
-function startEditing(id) {
-  editingTaskId = id;
-  render();
+function openSidebar() {
+  sidebar.classList.add('sidebar--open');
+  sidebarOverlay.classList.remove('hidden');
 }
 
-async function finishEditing(id, newText) {
-  const trimmed = newText.trim();
-
-  if (!trimmed) {
-    cancelEditing();
-    return;
-  }
-
-  const task = tasks.find((t) => t.id === id);
-  if (!task || task.text === trimmed) {
-    editingTaskId = null;
-    render();
-    return;
-  }
-
-  editingTaskId = null;
-  const success = await updateTaskText(id, trimmed);
-
-  if (!success) {
-    render();
-  }
+function closeSidebar() {
+  sidebar.classList.remove('sidebar--open');
+  sidebarOverlay.classList.add('hidden');
 }
-
-function cancelEditing() {
-  editingTaskId = null;
-  render();
-}
-
-/* ============================================
-   7. TEMA CLARO / OSCURO
-   ============================================ */
 
 function getTheme() {
   return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
@@ -678,48 +1139,77 @@ function getTheme() {
 function setTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem(THEME_STORAGE_KEY, theme);
-
   const isDark = theme === 'dark';
   themeToggle.setAttribute('aria-label', isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro');
-  themeToggle.title = isDark ? 'Modo claro' : 'Modo oscuro';
 }
 
 function toggleTheme() {
   setTheme(getTheme() === 'dark' ? 'light' : 'dark');
 }
 
-function initTheme() {
-  setTheme(getTheme());
-}
-
 /* ============================================
-   8. MANEJO DE EVENTOS E INICIALIZACIÓN
+   EVENTOS E INICIO
    ============================================ */
 
-addTaskForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  addTask(taskInput.value, prioritySelect.value, dueDateInput.value);
+addProjectForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  createProject(projectNameInput.value);
 });
 
-filterButtons.forEach((btn) => {
-  btn.addEventListener('click', () => setFilter(btn.dataset.filter));
+addTaskBtn.addEventListener('click', () => openModal(null, DEFAULT_STATUS));
+taskForm.addEventListener('submit', handleModalSubmit);
+modalClose.addEventListener('click', closeModal);
+modalCancel.addEventListener('click', closeModal);
+modalBackdrop.addEventListener('click', closeModal);
+modalDelete.addEventListener('click', () => {
+  if (editingTaskId && window.confirm('¿Eliminar esta tarea?')) {
+    deleteTask(editingTaskId);
+  }
 });
 
-clearCompletedBtn.addEventListener('click', clearCompleted);
+renameProjectBtn.addEventListener('click', () => {
+  if (!activeProjectId) return;
+  if (window.innerWidth <= 768) openSidebar();
+  startProjectEdit(activeProjectId);
+});
+
+deleteProjectBtn.addEventListener('click', () => {
+  if (activeProjectId) deleteProject(activeProjectId);
+});
+
 themeToggle.addEventListener('click', toggleTheme);
+sidebarOpen.addEventListener('click', openSidebar);
+sidebarClose.addEventListener('click', closeSidebar);
+sidebarOverlay.addEventListener('click', closeSidebar);
 
-/** Arranca la aplicación: carga tareas desde la API. */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !taskModal.classList.contains('hidden')) {
+    closeModal();
+  }
+});
+
+document.addEventListener('dragover', (e) => {
+  if (!isTaskDragEvent(e)) return;
+  if (window.innerWidth <= 768 && e.clientX < 72) {
+    sidebar.classList.add('sidebar--open');
+    sidebarOverlay.classList.remove('hidden');
+  }
+});
+
 async function init() {
-  initTheme();
-  updateFilterUI();
+  const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  setTheme(storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : getTheme());
 
   try {
     setLoading(true);
-    await reloadTasks();
-    taskInput.focus();
+    await reloadProjects();
+    if (activeProjectId) {
+      tasks = await fetchTasks(activeProjectId);
+      renderBoard();
+    }
   } catch (error) {
     showError(`No se pudo conectar con el servidor: ${error.message}`);
-    taskCounter.textContent = 'Error al cargar tareas';
+    taskCounter.textContent = 'Error al cargar';
   } finally {
     setLoading(false);
   }

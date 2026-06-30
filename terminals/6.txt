@@ -1,0 +1,10 @@
+---
+pid: 235148
+cwd: "C:\Users\felix\GrokProg\mi-todo-app"
+command: "Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; cd \"C:\\Users\\felix\\GrokProg\\mi-todo-app\"; node server/index.js"
+started_at: 2026-06-30T22:56:02.219Z
+running_for_ms: 2100014  
+---
+Servidor en http://localhost:3000
+API:   http://localhost:3000/api/tasks
+[db] better-sqlite3 no disponible — node:sqlite en C:\Users\felix\GrokProg\mi-todo-app\server\tasks.db

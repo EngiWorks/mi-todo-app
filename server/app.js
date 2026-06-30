@@ -11,6 +11,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const tasksRouter = require('./routes/tasks');
+const projectsRouter = require('./routes/projects');
 
 /**
  * Crea y configura la instancia de Express.
@@ -26,6 +27,7 @@ function createApp({ serveStatic = true } = {}) {
   app.use(express.json());
 
   // ----- Rutas API -----
+  app.use('/api/projects', projectsRouter);
   app.use('/api/tasks', tasksRouter);
 
   // ----- Frontend estático (solo en entorno local) -----
