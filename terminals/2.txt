@@ -1,0 +1,14 @@
+---
+pid: 212948
+cwd: "C:\Users\felix\GrokProg\mi-todo-app"
+command: "cd \"C:\\Users\\felix\\GrokProg\\mi-todo-app\\backend\"; npm.cmd start"
+started_at: 2026-06-30T20:55:51.364Z
+running_for_ms: 4070002  
+---
+
+> mi-todo-app-backend@1.0.0 start
+> node server.js
+
+Servidor en http://localhost:3000
+API: http://localhost:3000/tasks
+[Error] Expected property name or '}' in JSON at position 1 (line 1 column 2)

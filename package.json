@@ -1,0 +1,22 @@
+{
+  "name": "mi-todo-app",
+  "version": "1.0.0",
+  "description": "Aplicación full-stack de lista de tareas con Node.js, Express y SQLite",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js"
+  },
+  "keywords": ["todo", "express", "sqlite", "fullstack"],
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
