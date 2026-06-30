@@ -7,15 +7,19 @@ Aplicación de lista de tareas con **Node.js**, **Express**, **SQLite** y fronte
 ```
 mi-todo-app/
 ├── package.json          # Scripts y dependencias
+├── vercel.json           # Configuración de despliegue en Vercel
 ├── README.md
+├── api/
+│   └── index.js          # Entrada serverless (Vercel)
 ├── server/
-│   ├── index.js          # Servidor Express
-│   ├── db.js             # Conexión SQLite (better-sqlite3)
-│   ├── tasks.db          # Base de datos (se crea automáticamente)
+│   ├── index.js          # Servidor local (npm run dev)
+│   ├── app.js            # App Express compartida
+│   ├── db.js             # Conexión SQLite
+│   ├── tasks.db          # Base de datos local (se crea automáticamente)
 │   └── routes/
 │       └── tasks.js      # Rutas REST
 └── frontend/
-    ├── index.html        # Interfaz de usuario
+    ├── index.html        # Interfaz de usuario (estático en Vercel)
     ├── styles.css        # Estilos (tema claro/oscuro)
     └── app.js            # Lógica del cliente (fetch API)
 ```
@@ -107,8 +111,45 @@ El archivo `server/tasks.db` se genera automáticamente al iniciar el servidor.
 - Modo oscuro (preferencia guardada en `localStorage`)
 - Limpiar tareas completadas
 
+## Despliegue en Vercel
+
+### Requisitos
+
+- Cuenta en [Vercel](https://vercel.com)
+- Node.js **22+** en el proyecto (necesario para `node:sqlite` en serverless)
+
+### Pasos
+
+1. Sube el repositorio a GitHub/GitLab/Bitbucket.
+2. En Vercel: **Add New Project** → importa el repositorio.
+3. Vercel detecta `vercel.json` automáticamente. No cambies la configuración.
+4. Pulsa **Deploy**.
+
+### Cómo funciona en Vercel
+
+| Componente | Comportamiento |
+|------------|----------------|
+| `frontend/` | Se sirve como sitio estático (`outputDirectory`) |
+| `api/index.js` | Función serverless que ejecuta Express para `/api/*` |
+| `vercel.json` | Enruta `/api/tasks` → función serverless |
+
+### Importante: SQLite en serverless
+
+En Vercel la base de datos se guarda en `/tmp`, que es **efímero**:
+
+- Los datos pueden perderse entre despliegues o reinicios de funciones.
+- Para producción real se recomienda [Vercel Postgres](https://vercel.com/storage/postgres), [Turso](https://turso.tech/) o [PlanetScale](https://planetscale.com/).
+
+### Despliegue con CLI
+
+```bash
+npm i -g vercel
+vercel
+```
+
 ## Tecnologías
 
-- **Backend:** Node.js, Express, better-sqlite3, CORS
+- **Backend:** Node.js, Express, SQLite, CORS
 - **Frontend:** HTML5, CSS3, JavaScript (vanilla), Tailwind CDN
 - **Persistencia:** SQLite (las tareas ya no usan `localStorage`)
+- **Deploy:** Vercel (serverless + estático)

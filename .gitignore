@@ -3,4 +3,5 @@ server/tasks.db
 server/tasks.db-wal
 server/tasks.db-shm
 backend/
+.vercel/
 *.log

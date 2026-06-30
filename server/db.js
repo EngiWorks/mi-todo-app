@@ -3,15 +3,14 @@
  * Base de datos SQLite
  * ============================================
  *
- * Usa better-sqlite3 (requerido). Si no está compilado,
- * cae en node:sqlite integrado como respaldo de desarrollo.
+ * - Local: better-sqlite3 (o node:sqlite como respaldo)
+ * - Vercel: node:sqlite en /tmp (filesystem efímero serverless)
  *
  * Tabla tasks: id, text, completed, due_date, created_at
  */
 
 const path = require('path');
-
-const DB_PATH = path.join(__dirname, 'tasks.db');
+const os = require('os');
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS tasks (
@@ -23,57 +22,87 @@ const SCHEMA = `
   )
 `;
 
-/** @type {import('better-sqlite3').Database | import('node:sqlite').DatabaseSync} */
-let db;
+/** @type {import('better-sqlite3').Database | import('node:sqlite').DatabaseSync | null} */
+let db = null;
 
-/** Inicializa la conexión con el driver disponible */
+/** @type {Object | null} */
+let queries = null;
+
+/**
+ * Resuelve la ruta del archivo SQLite según el entorno.
+ * En Vercel solo /tmp es escribible (datos efímeros entre despliegues).
+ */
+function resolveDbPath() {
+  if (process.env.VERCEL) {
+    return path.join(os.tmpdir(), 'tasks.db');
+  }
+  return path.join(__dirname, 'tasks.db');
+}
+
+/**
+ * Inicializa la conexión SQLite (lazy — importante en serverless).
+ */
 function initDatabase() {
-  try {
-    const Database = require('better-sqlite3');
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    console.log('[db] Usando better-sqlite3');
-  } catch {
+  if (db) return;
+
+  const dbPath = resolveDbPath();
+
+  // En Vercel evitamos better-sqlite3 (binarios nativos problemáticos en Lambda)
+  if (process.env.VERCEL) {
     const { DatabaseSync } = require('node:sqlite');
-    db = new DatabaseSync(DB_PATH);
-    console.warn('[db] better-sqlite3 no disponible — usando node:sqlite como respaldo');
+    db = new DatabaseSync(dbPath);
+    console.log(`[db] Vercel — node:sqlite en ${dbPath}`);
+  } else {
+    try {
+      const Database = require('better-sqlite3');
+      db = new Database(dbPath);
+      db.pragma('journal_mode = WAL');
+      console.log(`[db] better-sqlite3 en ${dbPath}`);
+    } catch {
+      const { DatabaseSync } = require('node:sqlite');
+      db = new DatabaseSync(dbPath);
+      console.warn(`[db] better-sqlite3 no disponible — node:sqlite en ${dbPath}`);
+    }
   }
 
   db.exec(SCHEMA);
+
+  queries = {
+    findAll: db.prepare(`
+      SELECT id, text, completed, due_date, created_at
+      FROM tasks
+      ORDER BY
+        CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
+        due_date ASC,
+        datetime(created_at) DESC
+    `),
+
+    findById: db.prepare(`
+      SELECT id, text, completed, due_date, created_at
+      FROM tasks
+      WHERE id = ?
+    `),
+
+    insert: db.prepare(`
+      INSERT INTO tasks (text, completed, due_date, created_at)
+      VALUES (?, ?, ?, ?)
+    `),
+
+    update: db.prepare(`
+      UPDATE tasks
+      SET text = ?, completed = ?, due_date = ?
+      WHERE id = ?
+    `),
+
+    remove: db.prepare('DELETE FROM tasks WHERE id = ?'),
+  };
 }
 
-initDatabase();
-
-/** Consultas preparadas (parámetros posicionales ? para compatibilidad entre drivers) */
-const queries = {
-  findAll: db.prepare(`
-    SELECT id, text, completed, due_date, created_at
-    FROM tasks
-    ORDER BY
-      CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
-      due_date ASC,
-      datetime(created_at) DESC
-  `),
-
-  findById: db.prepare(`
-    SELECT id, text, completed, due_date, created_at
-    FROM tasks
-    WHERE id = ?
-  `),
-
-  insert: db.prepare(`
-    INSERT INTO tasks (text, completed, due_date, created_at)
-    VALUES (?, ?, ?, ?)
-  `),
-
-  update: db.prepare(`
-    UPDATE tasks
-    SET text = ?, completed = ?, due_date = ?
-    WHERE id = ?
-  `),
-
-  remove: db.prepare('DELETE FROM tasks WHERE id = ?'),
-};
+/** Devuelve las consultas preparadas (inicializa la BD si hace falta). */
+function getQueries() {
+  initDatabase();
+  return queries;
+}
 
 /**
  * Convierte una fila de SQLite al formato JSON de la API.
@@ -91,4 +120,4 @@ function formatTask(row) {
   };
 }
 
-module.exports = { db, queries, formatTask };
+module.exports = { getQueries, formatTask };

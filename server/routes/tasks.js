@@ -10,7 +10,7 @@
  */
 
 const express = require('express');
-const { queries, formatTask } = require('../db');
+const { getQueries, formatTask } = require('../db');
 
 const router = express.Router();
 
@@ -44,7 +44,7 @@ function normalizeDueDate(value) {
 /** GET /api/tasks */
 router.get('/', (req, res, next) => {
   try {
-    const rows = queries.findAll.all();
+    const rows = getQueries().findAll.all();
     res.json(rows.map(formatTask));
   } catch (error) {
     next(error);
@@ -71,14 +71,14 @@ router.post('/', (req, res, next) => {
       return res.status(400).json({ error: 'Formato de due_date inválido. Usa YYYY-MM-DD.' });
     }
 
-    const result = queries.insert.run(
+    const result = getQueries().insert.run(
       text.trim(),
       completed ? 1 : 0,
       normalizeDueDate(due_date),
       new Date().toISOString()
     );
 
-    const task = queries.findById.get(result.lastInsertRowid);
+    const task = getQueries().findById.get(result.lastInsertRowid);
     res.status(201).json(formatTask(task));
   } catch (error) {
     next(error);
@@ -97,7 +97,7 @@ router.put('/:id', (req, res, next) => {
       return res.status(400).json({ error: 'ID de tarea inválido.' });
     }
 
-    const existing = queries.findById.get(id);
+    const existing = getQueries().findById.get(id);
 
     if (!existing) {
       return res.status(404).json({ error: 'Tarea no encontrada.' });
@@ -123,14 +123,14 @@ router.put('/:id', (req, res, next) => {
       return res.status(400).json({ error: 'Formato de due_date inválido. Usa YYYY-MM-DD.' });
     }
 
-    queries.update.run(
+    getQueries().update.run(
       updated.text.trim(),
       updated.completed ? 1 : 0,
       normalizeDueDate(updated.due_date),
       id
     );
 
-    const task = queries.findById.get(id);
+    const task = getQueries().findById.get(id);
     res.json(formatTask(task));
   } catch (error) {
     next(error);
@@ -146,13 +146,13 @@ router.delete('/:id', (req, res, next) => {
       return res.status(400).json({ error: 'ID de tarea inválido.' });
     }
 
-    const existing = queries.findById.get(id);
+    const existing = getQueries().findById.get(id);
 
     if (!existing) {
       return res.status(404).json({ error: 'Tarea no encontrada.' });
     }
 
-    queries.remove.run(id);
+    getQueries().remove.run(id);
     res.status(204).send();
   } catch (error) {
     next(error);
